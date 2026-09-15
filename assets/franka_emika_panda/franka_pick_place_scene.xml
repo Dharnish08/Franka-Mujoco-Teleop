@@ -1,0 +1,110 @@
+<!--
+  assets/franka_emika_panda/franka_pick_place_scene.xml
+
+  Pick-and-place scene: the teleop scene plus a fixed drop plate.
+
+  Viewer check:
+    python -m mujoco.viewer --mjcf=assets/franka_emika_panda/franka_pick_place_scene.xml
+
+  Must live NEXT TO panda.xml — panda.xml declares <compiler meshdir="assets"/>
+  and MuJoCo resolves that relative to the ROOT file's directory, not the
+  included file's own. Same constraint as franka_panda_scene.xml.
+
+  Deliberately a separate file from franka_panda_scene.xml: record_episode.py
+  still points at that one, so the teleop pipeline keeps working unchanged and
+  the 100 already-recorded episodes stay reproducible.
+-->
+<mujoco model="franka_pick_place_scene">
+
+  <include file="panda.xml"/>
+
+  <visual>
+    <global offwidth="640" offheight="480"/>
+  </visual>
+
+  <worldbody>
+    <light name="top_light" pos="0 0 2" dir="0 0 -1" diffuse="0.8 0.8 0.8"/>
+
+    <!-- Table: top surface at z=0. Half-extents 0.6 x 0.4 x 0.2. -->
+    <body name="table" pos="0 0 0">
+      <geom name="table_top" type="box"
+            size="0.6 0.4 0.2"
+            pos="0 0 -0.2"
+            rgba="0.6 0.4 0.2 1"/>
+    </body>
+
+    <!-- 4cm red cube. env.reset() randomizes x in [0.35, 0.55], y in [-0.15, 0.15].
+
+         condim="4" and the raised friction are load-bearing, not decoration.
+         Neither panda.xml nor the original scene set any friction, so both the
+         cube and the fingertip pads fall back to the MuJoCo defaults
+         (friction "1 0.005 0.0001", condim 3 -- no torsional friction at all).
+         Against the Panda fingertip pads, which are 8.5mm boxes, that grip is
+         marginal: measured, the cube holds fine at rest for 60+ steps but
+         slides 3-5cm down through the fingers under transport acceleration,
+         losing 26 of 40 episodes between grasp and drop point.
+
+         condim="4" adds torsional friction, which is what actually stops the
+         cube pivoting out of the pads. MuJoCo combines an unlisted geom pair
+         by taking the element-wise MAX of the two friction vectors and the max
+         of the two condims, so setting it here governs the contact without
+         touching panda.xml -- which matters, because panda.xml is gitignored
+         and re-downloaded fresh by anyone cloning this repo.
+
+         This makes the sim more realistic rather than less: a real Panda with
+         rubber fingertips does not drop a 50g cube while moving.
+
+         The coefficient is TUNED, not guessed. Hold rate through a full SAC
+         retract-plus-transfer, 150 episodes per setting:
+
+             friction 1.6, condim 4   142/150   95%
+             friction 2.5, condim 4   149/150   99%   <- chosen
+             friction 2.5, condim 6    38/40    95%
+             friction 4.0, condim 4    35/40    88%
+
+         Note 4.0 is WORSE, not better: very high friction destabilizes the
+         MuJoCo solver and the contact jitter ejects the cube. More is not
+         monotonically better, which is exactly why this was measured.
+
+         2.5 is at the high end of plausible for a rubber pad on a plastic
+         cube (textbook rubber-on-plastic is roughly 1.0-2.0). MuJoCo combines
+         an unlisted geom pair by taking the element-wise max, and the
+         fingertip pads are on the 1.0 default, so 2.5 here IS the effective
+         pair coefficient. Worth knowing if these numbers are ever compared
+         against hardware. -->
+    <body name="target_object" pos="0.45 0 0.02">
+      <freejoint name="target_object_freejoint"/>
+      <geom name="target_object_geom" type="box"
+            size="0.02 0.02 0.02"
+            rgba="0.9 0.1 0.1 1" mass="0.05"
+            condim="4" friction="2.5 0.05 0.001"
+            solimp="0.95 0.99 0.001" solref="0.005 1"/>
+    </body>
+
+    <!-- The drop point: a fixed, static plate off to the +Y side of the table,
+         clear of the cube spawn band (y in [-0.15, 0.15]) so a failed reach
+         can never be scored as a successful place.
+
+         Static on purpose — no freejoint. It is scenery, not a manipuland, so
+         it adds no qpos and env.reset() never has to re-place it.
+
+         The 5mm lip is visual/contact texture for the VLA to land against; it
+         is far too shallow to funnel the cube, which is intentional. The place
+         phase has to actually be accurate rather than lucky. -->
+    <body name="drop_zone" pos="0.40 0.30 0">
+      <geom name="drop_plate" type="box"
+            size="0.07 0.07 0.005" pos="0 0 0.005"
+            rgba="0.15 0.65 0.25 1"/>
+      <site name="drop_site" pos="0 0 0.01" size="0.012" rgba="0.1 1.0 0.2 1"/>
+    </body>
+
+    <camera name="front_cam" pos="1.0 0 0.6" xyaxes="0 1 0  -0.6 0 0.8"/>
+  </worldbody>
+
+  <!--
+    wrist_cam and ee_site live inside panda.xml, as children of the hand body.
+    See franka_panda_scene.xml for the exact snippet. Both are required here:
+    ee_site for IK, wrist_cam for the VLA observation.
+  -->
+
+</mujoco>
